@@ -1,0 +1,13 @@
+# Toolchain pin for Floci.
+#
+# GraalVM Community Edition 25 — OpenJDK-based, GPLv2+CE licensed (fully open).
+# Serves both the JVM build/test path and local `-Dnative` builds (the
+# native-image tool ships inside CE). CI builds the JVM image on Temurin and
+# native images on Mandrel — both also GPLv2+CE.
+#
+# Do NOT use Oracle GraalVM: it ships under Oracle's GFTC terms (free-to-use but
+# Oracle-owned license), which we keep out of this MIT project's toolchain.
+#
+# `mise install` in this directory resolves the pin below.
+[tools]
+java = "graalvm-community-25.0.2"
