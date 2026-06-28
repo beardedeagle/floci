@@ -46,6 +46,9 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
     private static final Pattern SERVICE_PATTERN =
             Pattern.compile("Credential=\\S+/\\d{8}/[^/]+/([^/]+)/");
 
+    /** {@code FLOCI_ENFORCE_IAM} alias, cached: the env is static per process, read once. */
+    private static final String FLOCI_ENFORCE_IAM = System.getenv("FLOCI_ENFORCE_IAM");
+
     private final EmulatorConfig config;
     private final AccountResolver accountResolver;
     private final IamService iamService;
@@ -120,8 +123,7 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
         if (config.services().iam().enforcementEnabled()) {
             return true;
         }
-        String env = System.getenv("FLOCI_ENFORCE_IAM");
-        return "1".equals(env) || "true".equalsIgnoreCase(env);
+        return "1".equals(FLOCI_ENFORCE_IAM) || "true".equalsIgnoreCase(FLOCI_ENFORCE_IAM);
     }
 
     private String extractCredentialScope(String auth) {

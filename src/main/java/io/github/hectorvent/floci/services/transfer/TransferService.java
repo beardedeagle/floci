@@ -368,8 +368,8 @@ public class TransferService {
             entries = sftpClient.listDirectory(uri.getHost(), port(uri), creds,
                     trustedHostKeys(connector), remoteDirectoryPath);
         } catch (Exception e) {
-            throw new AwsException("InternalServiceError",
-                    "Directory listing failed: " + e.getMessage(), 500);
+            LOG.warn("Directory listing failed for connector " + connectorId, e);
+            throw new AwsException("InternalServiceError", "Directory listing failed.", 500);
         }
 
         ObjectNode root = objectMapper.createObjectNode();
@@ -402,8 +402,8 @@ public class TransferService {
         try {
             body = objectMapper.writeValueAsBytes(root);
         } catch (Exception e) {
-            throw new AwsException("InternalServiceError",
-                    "Failed to serialize listing: " + e.getMessage(), 500);
+            LOG.warn("Failed to serialize directory listing for connector " + connectorId, e);
+            throw new AwsException("InternalServiceError", "Failed to serialize directory listing.", 500);
         }
         s3Service.createBucket(bk[0], region);
         s3Service.putObject(bk[0], key, body, "application/json", new HashMap<>());
@@ -489,6 +489,10 @@ public class TransferService {
                     "Connector " + connector.getConnectorId() + " has no SftpConfig.UserSecretId.", 400);
         }
         SecretVersion version = secretsManagerService.getSecretValue(cfg.getUserSecretId(), null, null, region);
+        if (version.getSecretString() == null || version.getSecretString().isBlank()) {
+            throw new AwsException("InvalidRequestException",
+                    "Connector secret " + cfg.getUserSecretId() + " has no SecretString.", 400);
+        }
         String username;
         String password;
         String privateKey;
