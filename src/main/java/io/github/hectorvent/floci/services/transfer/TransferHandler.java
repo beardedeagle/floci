@@ -262,6 +262,9 @@ public class TransferHandler {
     private Response listConnectors(JsonNode req) {
         String nextToken = textOrNull(req, "NextToken");
         int maxResults = req.path("MaxResults").asInt(100);
+        if (maxResults < 1 || maxResults > 1000) {
+            throw new AwsException("InvalidRequestException", "MaxResults must be between 1 and 1000.", 400);
+        }
         // Over-fetch by one so we can tell whether more results exist beyond this
         // page: NextToken must only be returned when there genuinely is a next page,
         // otherwise clients paginate into an empty response.

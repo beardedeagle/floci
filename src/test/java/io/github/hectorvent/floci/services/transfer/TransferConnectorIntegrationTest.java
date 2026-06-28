@@ -115,4 +115,14 @@ class TransferConnectorIntegrationTest {
         assertNull(r.jsonPath().get("NextToken"),
                 "no NextToken when the page exactly exhausts results");
     }
+
+    @Test
+    @Order(8)
+    void listConnectorsRejectsOutOfRangeMaxResults() {
+        // MaxResults must be 1-1000; 0/negative previously tripped the over-fetch
+        // pagination into an IndexOutOfBoundsException.
+        call("ListConnectors", "{\"MaxResults\":0}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
 }
