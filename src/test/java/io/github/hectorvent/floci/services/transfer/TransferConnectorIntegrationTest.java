@@ -143,4 +143,16 @@ class TransferConnectorIntegrationTest {
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
     }
+
+    @Test
+    @Order(11)
+    void createConnectorWithoutSftpConfigFails() {
+        // SftpConfig.UserSecretId is required; a connector without it is unusable, so
+        // reject at create time rather than deferring to a data-plane failure.
+        call("CreateConnector",
+                "{\"Url\":\"sftp://partner.example.com\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\"}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
 }

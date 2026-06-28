@@ -261,4 +261,27 @@ class TransferDataPlaneIntegrationTest {
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
     }
+
+    @Test
+    @Order(13)
+    void deleteConnectorRemovesItsTransferResults() {
+        // Deleting a connector must also remove its stored transfer results (no orphans).
+        secretsManager.createSecret("local/todelete",
+                "{\"Username\":\"spectrum\",\"Password\":\"pass\"}", null, null, null, null, "us-east-1");
+        String cid = call("CreateConnector",
+                "{\"Url\":\"sftp://127.0.0.1:" + sftpPort + "\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/todelete\"}}")
+                .jsonPath().getString("ConnectorId");
+        String tid = call("StartFileTransfer",
+                "{\"ConnectorId\":\"" + cid + "\","
+                        + "\"RetrieveFilePaths\":[\"/Core_PSU_Reports/report1.csv\"],"
+                        + "\"LocalDirectoryPath\":\"/" + BUCKET + "/todelete\"}")
+                .jsonPath().getString("TransferId");
+        call("DeleteConnector", "{\"ConnectorId\":\"" + cid + "\"}").then().statusCode(200);
+        call("ListFileTransferResults",
+                "{\"ConnectorId\":\"" + cid + "\",\"TransferId\":\"" + tid + "\"}")
+                .then().statusCode(404)
+                .body("__type", equalTo("ResourceNotFoundException"));
+    }
 }

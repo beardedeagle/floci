@@ -251,6 +251,9 @@ public class TransferHandler {
         if (accessRole == null || accessRole.isEmpty()) {
             throw new AwsException("InvalidRequestException", "AccessRole is required.", 400);
         }
+        if (sftpConfig == null || sftpConfig.getUserSecretId() == null || sftpConfig.getUserSecretId().isEmpty()) {
+            throw new AwsException("InvalidRequestException", "SftpConfig.UserSecretId is required.", 400);
+        }
 
         Connector connector = service.createConnector(region, url, accessRole, loggingRole,
                 sftpConfig, securityPolicyName, tags);

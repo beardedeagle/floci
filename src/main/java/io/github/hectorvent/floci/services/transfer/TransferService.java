@@ -339,6 +339,16 @@ public class TransferService {
         getConnector(connectorId);
         connectorStore.delete(connectorId);
         tagStore.delete("connector/" + connectorId);
+        // Remove any stored file-transfer results for this connector to avoid orphans.
+        List<String> orphanedTransferIds = new ArrayList<>();
+        for (TransferRecord r : transferResultStore.scan(k -> true)) {
+            if (connectorId.equals(r.getConnectorId())) {
+                orphanedTransferIds.add(r.getTransferId());
+            }
+        }
+        for (String transferId : orphanedTransferIds) {
+            transferResultStore.delete(transferId);
+        }
     }
 
     // ── Connector data plane (SFTP <-> S3) ────────────────────────────────────
