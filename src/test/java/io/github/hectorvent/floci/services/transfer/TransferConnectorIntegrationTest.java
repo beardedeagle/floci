@@ -125,4 +125,13 @@ class TransferConnectorIntegrationTest {
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
     }
+
+    @Test
+    @Order(9)
+    void listConnectorsRejectsInvalidNextToken() {
+        // An unknown NextToken must be rejected, not silently treated as page 1.
+        call("ListConnectors", "{\"NextToken\":\"c-doesnotexist00000\"}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
 }

@@ -316,12 +316,16 @@ public class TransferService {
         List<Connector> all = new ArrayList<>(connectorStore.scan(k -> true));
         all.sort((a, b) -> a.getConnectorId().compareTo(b.getConnectorId()));
         if (nextToken != null && !nextToken.isEmpty()) {
-            int idx = 0;
+            int idx = -1;
             for (int i = 0; i < all.size(); i++) {
                 if (all.get(i).getConnectorId().equals(nextToken)) {
                     idx = i + 1;
                     break;
                 }
+            }
+            if (idx < 0) {
+                throw new AwsException("InvalidRequestException",
+                        "The provided NextToken is not valid.", 400);
             }
             all = all.subList(idx, all.size());
         }
@@ -520,7 +524,7 @@ public class TransferService {
         }
         if (!"sftp".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getHost().isBlank()) {
             throw new AwsException("InvalidRequestException",
-                    "Connector URL must be of the form sftp://<host>[:port]: " + url, 400);
+                    "Connector URL must be an sftp://<host>[:port] URL, got: " + url, 400);
         }
         return uri;
     }

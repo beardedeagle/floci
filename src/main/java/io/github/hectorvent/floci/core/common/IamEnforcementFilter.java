@@ -22,7 +22,8 @@ import java.util.regex.Pattern;
 
 /**
  * JAX-RS filter that enforces IAM policies on every incoming request when
- * {@code floci.iam.enforcement-enabled = true}.
+ * {@code floci.services.iam.enforcement-enabled = true} (or the
+ * {@code FLOCI_ENFORCE_IAM} env-var alias is set).
  *
  * <p>Bypass rules (request is always allowed through):
  * <ul>

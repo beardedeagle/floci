@@ -165,7 +165,7 @@ public class SftpConnectorClient {
                 return fn.apply(session);
             }
         } catch (Exception e) {
-            LOG.error("SFTP connector operation failed (diagnostic stack)", e);
+            LOG.debug("SFTP connector operation failed (diagnostic stack)", e);
             throw e;
         } finally {
             client.stop();
