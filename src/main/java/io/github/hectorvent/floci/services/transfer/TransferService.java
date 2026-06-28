@@ -454,27 +454,44 @@ public class TransferService {
                     "Connector " + connector.getConnectorId() + " has no SftpConfig.UserSecretId.", 400);
         }
         SecretVersion version = secretsManagerService.getSecretValue(cfg.getUserSecretId(), null, null, region);
+        String username;
+        String password;
+        String privateKey;
         try {
             JsonNode node = objectMapper.readTree(version.getSecretString());
-            return new SftpConnectorClient.SftpCredentials(
-                    node.path("Username").asText(null),
-                    node.path("Password").asText(null),
-                    node.path("PrivateKey").asText(null));
+            username = node.path("Username").asText(null);
+            password = node.path("Password").asText(null);
+            privateKey = node.path("PrivateKey").asText(null);
         } catch (Exception e) {
             throw new AwsException("InvalidRequestException",
                     "Connector secret is not valid JSON: " + e.getMessage(), 400);
         }
+        if (username == null || username.isBlank()) {
+            throw new AwsException("InvalidRequestException",
+                    "Connector secret must contain a Username.", 400);
+        }
+        if ((password == null || password.isBlank()) && (privateKey == null || privateKey.isBlank())) {
+            throw new AwsException("InvalidRequestException",
+                    "Connector secret must contain a Password or PrivateKey.", 400);
+        }
+        return new SftpConnectorClient.SftpCredentials(username, password, privateKey);
     }
 
     private URI parseUrl(String url) {
         if (url == null || url.isEmpty()) {
             throw new AwsException("InvalidRequestException", "Connector URL is missing.", 400);
         }
+        URI uri;
         try {
-            return URI.create(url);
+            uri = URI.create(url);
         } catch (Exception e) {
             throw new AwsException("InvalidRequestException", "Invalid connector URL: " + url, 400);
         }
+        if (!"sftp".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getHost().isBlank()) {
+            throw new AwsException("InvalidRequestException",
+                    "Connector URL must be of the form sftp://<host>[:port]: " + url, 400);
+        }
+        return uri;
     }
 
     private int port(URI uri) {

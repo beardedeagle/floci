@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -42,7 +43,7 @@ class TransferDataPlaneIntegrationTest {
     private static final String CT = "application/x-amz-json-1.1";
     private static final String PREFIX = "TransferService.";
     private static final String BUCKET = "transfer-dataplane-test";
-    private static final byte[] FILE_BODY = "psu,report,2026\n1,2,3\n".getBytes();
+    private static final byte[] FILE_BODY = "psu,report,2026\n1,2,3\n".getBytes(StandardCharsets.UTF_8);
 
     private static SshServer sshd;
     private static int sftpPort;
@@ -67,7 +68,7 @@ class TransferDataPlaneIntegrationTest {
 
         sshd = SshServer.setUpDefaultServer();
         sshd.setPort(0);
-        sshd.setKeyPairProvider(new SimpleGeneratorHostKeyProvider());
+        sshd.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(root.resolve("hostkey.ser")));
         sshd.setPasswordAuthenticator((username, password, session) ->
                 "spectrum".equals(username) && "pass".equals(password));
         sshd.setSubsystemFactories(List.of(new SftpSubsystemFactory.Builder().build()));
@@ -173,6 +174,43 @@ class TransferDataPlaneIntegrationTest {
                 "{\"ConnectorId\":\"" + connectorId + "\","
                         + "\"RetrieveFilePaths\":[\"/Core_PSU_Reports/report1.csv\"],"
                         + "\"LocalDirectoryPath\":\"/\"}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
+
+    @Test
+    @Order(8)
+    void testConnectionRejectsNonSftpUrl() {
+        // A connector URL that is not sftp://<host> must be rejected with 400, not
+        // dereferenced into a null host and a murky 500.
+        secretsManager.createSecret("local/badurl",
+                "{\"Username\":\"x\",\"Password\":\"y\"}", null, null, null, null, "us-east-1");
+        Response c = call("CreateConnector",
+                "{\"Url\":\"ftp://example.com\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/badurl\"}}");
+        String badConnector = c.jsonPath().getString("ConnectorId");
+        call("TestConnection", "{\"ConnectorId\":\"" + badConnector + "\"}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
+
+    @Test
+    @Order(9)
+    void dataPlaneRejectsSecretMissingRequiredFields() {
+        // A connector secret with a Username but neither Password nor PrivateKey must
+        // 400 up front rather than attempting an identity-less auth.
+        secretsManager.createSecret("local/nopass",
+                "{\"Username\":\"spectrum\"}", null, null, null, null, "us-east-1");
+        Response c = call("CreateConnector",
+                "{\"Url\":\"sftp://127.0.0.1:" + sftpPort + "\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/nopass\"}}");
+        String connector = c.jsonPath().getString("ConnectorId");
+        call("StartFileTransfer",
+                "{\"ConnectorId\":\"" + connector + "\","
+                        + "\"RetrieveFilePaths\":[\"/Core_PSU_Reports/report1.csv\"],"
+                        + "\"LocalDirectoryPath\":\"/" + BUCKET + "/x\"}")
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
     }

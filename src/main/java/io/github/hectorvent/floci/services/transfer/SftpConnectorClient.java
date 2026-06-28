@@ -31,9 +31,9 @@ import java.util.List;
  * <p>Host-key verification is intentionally permissive (AcceptAll), and a connector's
  * {@code SftpConfig.TrustedHostKeys} is accepted for API-shape fidelity but deliberately
  * NOT enforced: this is a local emulator data-plane surface that pulls from the bundled
- * SFTP container (ephemeral host keys), not a security boundary — see docs/CONTRACT.md.
- * If this client is ever pointed at a real external partner endpoint, host-key pinning
- * (and honoring TrustedHostKeys) must be revisited.
+ * SFTP container (ephemeral host keys), not a security boundary. If this client is ever
+ * pointed at a real external partner endpoint, host-key pinning (and honoring
+ * TrustedHostKeys) must be revisited.
  */
 @ApplicationScoped
 public class SftpConnectorClient {
