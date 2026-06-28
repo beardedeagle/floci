@@ -25,6 +25,12 @@ source "$HOME/.sdkman/bin/sdkman-init.sh"
 sdk install java 25-open
 ```
 
+This repo **pins GraalVM CE 25** via `mise.toml` — running `mise install` (or any
+mise-aware shell) in the project root selects it automatically. GraalVM CE and
+[Mandrel](https://github.com/graalvm/mandrel) are OpenJDK-based and fully open
+(GPLv2+CE); CI builds with Temurin (JVM) and Mandrel (native). Avoid Oracle
+GraalVM, which ships under Oracle's GFTC terms.
+
 ### Build & Run
 
 This project includes a Maven wrapper, so you don't need to install Maven separately:

@@ -22,7 +22,8 @@ import java.util.regex.Pattern;
 
 /**
  * JAX-RS filter that enforces IAM policies on every incoming request when
- * {@code floci.iam.enforcement-enabled = true}.
+ * {@code floci.services.iam.enforcement-enabled = true} (or the
+ * {@code FLOCI_ENFORCE_IAM} env-var alias is set).
  *
  * <p>Bypass rules (request is always allowed through):
  * <ul>
@@ -44,6 +45,9 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
     /** Extracts the credential-scope service name (e.g. "s3", "lambda"). */
     private static final Pattern SERVICE_PATTERN =
             Pattern.compile("Credential=\\S+/\\d{8}/[^/]+/([^/]+)/");
+
+    /** {@code FLOCI_ENFORCE_IAM} alias, cached: the env is static per process, read once. */
+    private static final String FLOCI_ENFORCE_IAM = System.getenv("FLOCI_ENFORCE_IAM");
 
     private final EmulatorConfig config;
     private final AccountResolver accountResolver;
@@ -69,7 +73,7 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
 
     @Override
     public void filter(ContainerRequestContext ctx) {
-        if (!config.services().iam().enforcementEnabled()) {
+        if (!enforcementEnabled()) {
             return;
         }
 
@@ -107,6 +111,19 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
             LOG.infov("IAM enforcement DENY: akid={0} action={1} resource={2}", akid, action, resource);
             ctx.abortWith(accessDeniedResponse(action, credentialScope, ctx.getMediaType()));
         }
+    }
+
+    /**
+     * Enforcement is on when either the {@code floci.services.iam.enforcement-enabled}
+     * config flag is true, or the {@code FLOCI_ENFORCE_IAM} env var is set to
+     * {@code 1}/{@code true} — a convenience alias for switching on local deny-path
+     * testing without the longer {@code FLOCI_SERVICES_IAM_ENFORCEMENT_ENABLED}.
+     */
+    private boolean enforcementEnabled() {
+        if (config.services().iam().enforcementEnabled()) {
+            return true;
+        }
+        return "1".equals(FLOCI_ENFORCE_IAM) || "true".equalsIgnoreCase(FLOCI_ENFORCE_IAM);
     }
 
     private String extractCredentialScope(String auth) {

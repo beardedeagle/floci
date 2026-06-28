@@ -6,9 +6,13 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.JsonErrorResponseUtils;
+import io.github.hectorvent.floci.services.transfer.model.Connector;
+import io.github.hectorvent.floci.services.transfer.model.FileTransferResult;
 import io.github.hectorvent.floci.services.transfer.model.HomeDirectoryMapping;
 import io.github.hectorvent.floci.services.transfer.model.Server;
+import io.github.hectorvent.floci.services.transfer.model.SftpConnectorConfig;
 import io.github.hectorvent.floci.services.transfer.model.SshPublicKey;
+import io.github.hectorvent.floci.services.transfer.model.TransferRecord;
 import io.github.hectorvent.floci.services.transfer.model.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -46,6 +50,14 @@ public class TransferHandler {
                 case "DeleteUser"         -> deleteUser(request);
                 case "ListUsers"          -> listUsers(request);
                 case "UpdateUser"         -> updateUser(request);
+                case "CreateConnector"    -> createConnector(request, region);
+                case "DescribeConnector"  -> describeConnector(request);
+                case "ListConnectors"     -> listConnectors(request);
+                case "DeleteConnector"    -> deleteConnector(request);
+                case "TestConnection"          -> testConnection(request, region);
+                case "StartDirectoryListing"   -> startDirectoryListing(request, region);
+                case "StartFileTransfer"       -> startFileTransfer(request, region);
+                case "ListFileTransferResults" -> listFileTransferResults(request);
                 case "ImportSshPublicKey" -> importSshPublicKey(request);
                 case "DeleteSshPublicKey" -> deleteSshPublicKey(request);
                 case "TagResource"        -> tagResource(request);
@@ -214,6 +226,148 @@ public class TransferHandler {
         return Response.ok(resp).build();
     }
 
+    // ── Connector handlers ────────────────────────────────────────────────────
+
+    /** Reads a required string field, returning 400 InvalidRequestException when absent/blank. */
+    private static String required(JsonNode req, String field) {
+        String v = req.path(field).asText();
+        if (v == null || v.isEmpty()) {
+            throw new AwsException("InvalidRequestException", field + " is required.", 400);
+        }
+        return v;
+    }
+
+    private Response createConnector(JsonNode req, String region) {
+        String url = textOrNull(req, "Url");
+        String accessRole = textOrNull(req, "AccessRole");
+        String loggingRole = textOrNull(req, "LoggingRole");
+        String securityPolicyName = textOrNull(req, "SecurityPolicyName");
+        SftpConnectorConfig sftpConfig = parseSftpConfig(req.path("SftpConfig"));
+        Map<String, String> tags = parseTags(req.path("Tags"));
+
+        if (url == null || url.isEmpty()) {
+            throw new AwsException("InvalidRequestException", "Url is required.", 400);
+        }
+        if (accessRole == null || accessRole.isEmpty()) {
+            throw new AwsException("InvalidRequestException", "AccessRole is required.", 400);
+        }
+
+        Connector connector = service.createConnector(region, url, accessRole, loggingRole,
+                sftpConfig, securityPolicyName, tags);
+
+        ObjectNode resp = objectMapper.createObjectNode();
+        resp.put("ConnectorId", connector.getConnectorId());
+        return Response.ok(resp).build();
+    }
+
+    private Response describeConnector(JsonNode req) {
+        String connectorId = required(req, "ConnectorId");
+        Connector connector = service.getConnector(connectorId);
+        ObjectNode resp = objectMapper.createObjectNode();
+        resp.set("Connector", buildConnectorNode(connector));
+        return Response.ok(resp).build();
+    }
+
+    private Response listConnectors(JsonNode req) {
+        String nextToken = textOrNull(req, "NextToken");
+        int maxResults = req.path("MaxResults").asInt(100);
+        if (maxResults < 1 || maxResults > 1000) {
+            throw new AwsException("InvalidRequestException", "MaxResults must be between 1 and 1000.", 400);
+        }
+        // Over-fetch by one so we can tell whether more results exist beyond this
+        // page: NextToken must only be returned when there genuinely is a next page,
+        // otherwise clients paginate into an empty response.
+        List<Connector> page = service.listConnectors(nextToken, maxResults + 1);
+        boolean hasMore = page.size() > maxResults;
+        if (hasMore) {
+            page = page.subList(0, maxResults);
+        }
+
+        ObjectNode resp = objectMapper.createObjectNode();
+        ArrayNode arr = resp.putArray("Connectors");
+        for (Connector c : page) {
+            arr.add(buildConnectorListEntry(c));
+        }
+        if (hasMore) {
+            resp.put("NextToken", page.get(page.size() - 1).getConnectorId());
+        }
+        return Response.ok(resp).build();
+    }
+
+    private Response deleteConnector(JsonNode req) {
+        service.deleteConnector(required(req, "ConnectorId"));
+        return Response.ok(objectMapper.createObjectNode()).build();
+    }
+
+    private Response testConnection(JsonNode req, String region) {
+        String connectorId = required(req, "ConnectorId");
+        TransferService.ConnectionTest result = service.testConnection(connectorId, region);
+        ObjectNode resp = objectMapper.createObjectNode();
+        resp.put("ConnectorId", connectorId);
+        resp.put("Status", result.status());
+        resp.put("StatusMessage", result.statusMessage());
+        if (result.hostKey() != null) {
+            ObjectNode details = resp.putObject("SftpConnectionDetails");
+            details.put("HostKey", result.hostKey());
+        }
+        return Response.ok(resp).build();
+    }
+
+    private Response startDirectoryListing(JsonNode req, String region) {
+        String connectorId = required(req, "ConnectorId");
+        String remoteDirectoryPath = textOrNull(req, "RemoteDirectoryPath");
+        String outputDirectoryPath = textOrNull(req, "OutputDirectoryPath");
+        int maxItems = req.path("MaxItems").asInt(0);
+        if (remoteDirectoryPath == null) {
+            throw new AwsException("InvalidRequestException", "RemoteDirectoryPath is required.", 400);
+        }
+        if (outputDirectoryPath == null) {
+            throw new AwsException("InvalidRequestException", "OutputDirectoryPath is required.", 400);
+        }
+        TransferService.DirectoryListing listing = service.startDirectoryListing(
+                connectorId, region, remoteDirectoryPath, outputDirectoryPath, maxItems);
+        ObjectNode resp = objectMapper.createObjectNode();
+        resp.put("ListingId", listing.listingId());
+        resp.put("OutputFileName", listing.outputFileName());
+        return Response.ok(resp).build();
+    }
+
+    private Response startFileTransfer(JsonNode req, String region) {
+        String connectorId = required(req, "ConnectorId");
+        List<String> retrieveFilePaths = jsonStringList(req.path("RetrieveFilePaths"));
+        String localDirectoryPath = textOrNull(req, "LocalDirectoryPath");
+        if (retrieveFilePaths.isEmpty()) {
+            throw new AwsException("InvalidRequestException", "RetrieveFilePaths is required.", 400);
+        }
+        if (localDirectoryPath == null) {
+            throw new AwsException("InvalidRequestException", "LocalDirectoryPath is required.", 400);
+        }
+        String transferId = service.startFileTransfer(connectorId, region, retrieveFilePaths, localDirectoryPath);
+        ObjectNode resp = objectMapper.createObjectNode();
+        resp.put("TransferId", transferId);
+        return Response.ok(resp).build();
+    }
+
+    private Response listFileTransferResults(JsonNode req) {
+        String connectorId = required(req, "ConnectorId");
+        String transferId = required(req, "TransferId");
+        TransferRecord record = service.listFileTransferResults(connectorId, transferId);
+        ObjectNode resp = objectMapper.createObjectNode();
+        ArrayNode arr = resp.putArray("FileTransferResults");
+        for (FileTransferResult r : record.getResults()) {
+            ObjectNode n = arr.addObject();
+            n.put("FilePath", r.getFilePath());
+            n.put("StatusCode", r.getStatusCode());
+            if (r.getFailureCode() != null) {
+                n.put("FailureCode", r.getFailureCode());
+            }
+            if (r.getFailureMessage() != null) {
+                n.put("FailureMessage", r.getFailureMessage());
+            }
+        }
+        return Response.ok(resp).build();
+    }
+
     // ── SSH key handlers ──────────────────────────────────────────────────────
 
     private Response importSshPublicKey(JsonNode req) {
@@ -366,6 +520,44 @@ public class TransferHandler {
         return node;
     }
 
+    private ObjectNode buildConnectorNode(Connector c) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("Arn", c.getArn());
+        node.put("ConnectorId", c.getConnectorId());
+        node.put("Url", c.getUrl());
+        if (c.getAccessRole() != null) node.put("AccessRole", c.getAccessRole());
+        if (c.getLoggingRole() != null) node.put("LoggingRole", c.getLoggingRole());
+        if (c.getSecurityPolicyName() != null) node.put("SecurityPolicyName", c.getSecurityPolicyName());
+        if (c.getSftpConfig() != null) {
+            ObjectNode sftp = node.putObject("SftpConfig");
+            if (c.getSftpConfig().getUserSecretId() != null) {
+                sftp.put("UserSecretId", c.getSftpConfig().getUserSecretId());
+            }
+            ArrayNode keys = sftp.putArray("TrustedHostKeys");
+            if (c.getSftpConfig().getTrustedHostKeys() != null) {
+                c.getSftpConfig().getTrustedHostKeys().forEach(keys::add);
+            }
+        }
+        if (c.getTags() != null && !c.getTags().isEmpty()) {
+            ArrayNode tags = node.putArray("Tags");
+            c.getTags().forEach((k, v) -> {
+                ObjectNode tag = objectMapper.createObjectNode();
+                tag.put("Key", k);
+                tag.put("Value", v);
+                tags.add(tag);
+            });
+        }
+        return node;
+    }
+
+    private ObjectNode buildConnectorListEntry(Connector c) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("Arn", c.getArn());
+        node.put("ConnectorId", c.getConnectorId());
+        node.put("Url", c.getUrl());
+        return node;
+    }
+
     // ── Parsing helpers ───────────────────────────────────────────────────────
 
     private String textOrNull(JsonNode node, String field) {
@@ -422,5 +614,15 @@ public class TransferHandler {
             });
         }
         return list;
+    }
+
+    private SftpConnectorConfig parseSftpConfig(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        SftpConnectorConfig cfg = new SftpConnectorConfig();
+        cfg.setUserSecretId(textOrNull(node, "UserSecretId"));
+        cfg.setTrustedHostKeys(jsonStringList(node.path("TrustedHostKeys")));
+        return cfg;
     }
 }
