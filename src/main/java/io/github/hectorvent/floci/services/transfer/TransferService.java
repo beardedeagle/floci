@@ -282,6 +282,7 @@ public class TransferService {
     public Connector createConnector(String region, String url, String accessRole,
                                      String loggingRole, SftpConnectorConfig sftpConfig,
                                      String securityPolicyName, Map<String, String> tags) {
+        parseUrl(url); // reject a non-sftp:// or hostless URL at create time (matches AWS)
         String connectorId = generateConnectorId();
         String arn = "arn:aws:transfer:" + region + ":" + regionResolver.getAccountId() + ":connector/" + connectorId;
 
@@ -343,7 +344,7 @@ public class TransferService {
         URI uri = parseUrl(connector.getUrl());
         try {
             SftpConnectorClient.SftpCredentials creds = resolveCredentials(connector, region);
-            String hostKey = sftpClient.fetchHostKey(uri.getHost(), port(uri), creds);
+            String hostKey = sftpClient.fetchHostKey(uri.getHost(), port(uri), creds, trustedHostKeys(connector));
             return new ConnectionTest("OK", "Connection succeeded", hostKey);
         } catch (Exception e) {
             LOG.warn("TestConnection failed for connector " + connectorId, e);
@@ -360,7 +361,8 @@ public class TransferService {
 
         List<SftpConnectorClient.RemoteEntry> entries;
         try {
-            entries = sftpClient.listDirectory(uri.getHost(), port(uri), creds, remoteDirectoryPath);
+            entries = sftpClient.listDirectory(uri.getHost(), port(uri), creds,
+                    trustedHostKeys(connector), remoteDirectoryPath);
         } catch (Exception e) {
             throw new AwsException("InternalServiceError",
                     "Directory listing failed: " + e.getMessage(), 500);
@@ -413,20 +415,40 @@ public class TransferService {
         s3Service.createBucket(bk[0], region);
 
         List<FileTransferResult> results = new ArrayList<>();
-        for (String remotePath : retrieveFilePaths) {
-            FileTransferResult result = new FileTransferResult();
-            result.setFilePath(remotePath);
-            try {
-                byte[] data = sftpClient.retrieveFile(uri.getHost(), port(uri), creds, remotePath);
-                String key = (bk[1].isEmpty() ? "" : bk[1] + "/") + basename(remotePath);
-                s3Service.putObject(bk[0], key, data, "application/octet-stream", new HashMap<>());
-                result.setStatusCode("COMPLETED");
-            } catch (Exception e) {
-                result.setStatusCode("FAILED");
-                result.setFailureCode("RETRIEVE_FAILED");
-                result.setFailureMessage(e.getMessage());
+        try {
+            List<SftpConnectorClient.FileFetch> fetched = sftpClient.retrieveFiles(
+                    uri.getHost(), port(uri), creds, trustedHostKeys(connector), retrieveFilePaths);
+            for (SftpConnectorClient.FileFetch f : fetched) {
+                FileTransferResult result = new FileTransferResult();
+                result.setFilePath(f.remotePath());
+                if (f.errorMessage() != null) {
+                    result.setStatusCode("FAILED");
+                    result.setFailureCode("RETRIEVE_FAILED");
+                    result.setFailureMessage(f.errorMessage());
+                } else {
+                    try {
+                        String key = (bk[1].isEmpty() ? "" : bk[1] + "/") + basename(f.remotePath());
+                        s3Service.putObject(bk[0], key, f.data(), "application/octet-stream", new HashMap<>());
+                        result.setStatusCode("COMPLETED");
+                    } catch (Exception e) {
+                        result.setStatusCode("FAILED");
+                        result.setFailureCode("WRITE_FAILED");
+                        result.setFailureMessage(e.getMessage());
+                    }
+                }
+                results.add(result);
             }
-            results.add(result);
+        } catch (Exception e) {
+            // Session-level failure (connect/auth/host-key): mark every requested file failed.
+            LOG.warn("StartFileTransfer session failed for connector " + connectorId, e);
+            for (String remotePath : retrieveFilePaths) {
+                FileTransferResult result = new FileTransferResult();
+                result.setFilePath(remotePath);
+                result.setStatusCode("FAILED");
+                result.setFailureCode("CONNECTION_FAILED");
+                result.setFailureMessage(e.getMessage());
+                results.add(result);
+            }
         }
 
         String transferId = UUID.randomUUID().toString();
@@ -449,6 +471,11 @@ public class TransferService {
                     "Transfer " + transferId + " does not exist for connector " + connectorId + ".", 404);
         }
         return record;
+    }
+
+    private List<String> trustedHostKeys(Connector connector) {
+        SftpConnectorConfig cfg = connector.getSftpConfig();
+        return cfg == null ? null : cfg.getTrustedHostKeys();
     }
 
     private SftpConnectorClient.SftpCredentials resolveCredentials(Connector connector, String region) {
@@ -513,7 +540,10 @@ public class TransferService {
             throw new AwsException("InvalidRequestException",
                     "S3 directory path must include a bucket: " + path, 400);
         }
-        return new String[]{bucket, slash < 0 ? "" : p.substring(slash + 1)};
+        // Strip trailing slashes from the key prefix so callers that append "/" don't
+        // produce double-slash keys ("prefix//file").
+        String prefix = (slash < 0 ? "" : p.substring(slash + 1)).replaceAll("/+$", "");
+        return new String[]{bucket, prefix};
     }
 
     private String basename(String path) {

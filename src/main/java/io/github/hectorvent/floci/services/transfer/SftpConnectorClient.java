@@ -5,6 +5,7 @@ import org.jboss.logging.Logger;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.ClientBuilder;
 import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier;
+import org.apache.sshd.client.keyverifier.ServerKeyVerifier;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.common.NamedResource;
 import org.apache.sshd.common.config.keys.FilePasswordProvider;
@@ -28,12 +29,11 @@ import java.util.List;
  * the server host key, list a remote directory, and retrieve files. Pairs with the
  * connector ops in {@link TransferHandler} / {@link TransferService}.
  *
- * <p>Host-key verification is intentionally permissive (AcceptAll), and a connector's
- * {@code SftpConfig.TrustedHostKeys} is accepted for API-shape fidelity but deliberately
- * NOT enforced: this is a local emulator data-plane surface that pulls from the bundled
- * SFTP container (ephemeral host keys), not a security boundary. If this client is ever
- * pointed at a real external partner endpoint, host-key pinning (and honoring
- * TrustedHostKeys) must be revisited.
+ * <p>Host-key verification honors the connector's {@code SftpConfig.TrustedHostKeys}:
+ * when that list is non-empty the presented server key must match a trusted entry
+ * (key-type + base64 blob), otherwise the connection is rejected. When the list is
+ * empty/omitted -- the usual local case, where the bundled SFTP container has an
+ * ephemeral host key -- verification falls back to permissive (AcceptAll).
  */
 @ApplicationScoped
 public class SftpConnectorClient {
@@ -68,16 +68,21 @@ public class SftpConnectorClient {
 
     public record RemoteEntry(String name, long size, long modifiedEpochMillis, boolean directory) {}
 
+    /** Outcome of fetching one remote file in a batch: data on success, errorMessage on failure. */
+    public record FileFetch(String remotePath, byte[] data, String errorMessage) {}
+
     /** Connect and return the server host key in OpenSSH format (e.g. "ssh-rsa AAAA..."). */
-    public String fetchHostKey(String host, int port, SftpCredentials creds) throws Exception {
-        return withSession(host, port, creds, session ->
+    public String fetchHostKey(String host, int port, SftpCredentials creds, List<String> trustedHostKeys)
+            throws Exception {
+        return withSession(host, port, creds, trustedHostKeys, session ->
                 PublicKeyEntry.toString(session.getServerKey()));
     }
 
     /** List a remote directory (excludes "." and ".."). */
-    public List<RemoteEntry> listDirectory(String host, int port, SftpCredentials creds, String remotePath)
+    public List<RemoteEntry> listDirectory(String host, int port, SftpCredentials creds,
+                                           List<String> trustedHostKeys, String remotePath)
             throws Exception {
-        return withSftp(host, port, creds, sftp -> {
+        return withSftp(host, port, creds, trustedHostKeys, sftp -> {
             List<RemoteEntry> entries = new ArrayList<>();
             for (SftpClient.DirEntry e : sftp.readDir(remotePath)) {
                 String name = e.getFilename();
@@ -93,13 +98,24 @@ public class SftpConnectorClient {
         });
     }
 
-    /** Retrieve the full contents of a remote file. */
-    public byte[] retrieveFile(String host, int port, SftpCredentials creds, String remotePath)
+    /**
+     * Retrieve several remote files over a SINGLE SSH session. Per-file failures are
+     * captured in the returned {@link FileFetch} (errorMessage non-null) rather than
+     * aborting the batch; a session-level failure (connect/auth/host-key) throws.
+     */
+    public List<FileFetch> retrieveFiles(String host, int port, SftpCredentials creds,
+                                         List<String> trustedHostKeys, List<String> remotePaths)
             throws Exception {
-        return withSftp(host, port, creds, sftp -> {
-            try (InputStream in = sftp.read(remotePath)) {
-                return in.readAllBytes();
+        return withSftp(host, port, creds, trustedHostKeys, sftp -> {
+            List<FileFetch> out = new ArrayList<>();
+            for (String remotePath : remotePaths) {
+                try (InputStream in = sftp.read(remotePath)) {
+                    out.add(new FileFetch(remotePath, in.readAllBytes(), null));
+                } catch (Exception e) {
+                    out.add(new FileFetch(remotePath, null, e.getMessage()));
+                }
             }
+            return out;
         });
     }
 
@@ -109,15 +125,17 @@ public class SftpConnectorClient {
 
     private interface SftpFn<T> { T apply(SftpClient sftp) throws Exception; }
 
-    private <T> T withSftp(String host, int port, SftpCredentials creds, SftpFn<T> fn) throws Exception {
-        return withSession(host, port, creds, session -> {
+    private <T> T withSftp(String host, int port, SftpCredentials creds,
+                           List<String> trustedHostKeys, SftpFn<T> fn) throws Exception {
+        return withSession(host, port, creds, trustedHostKeys, session -> {
             try (SftpClient sftp = SftpClientFactory.instance().createSftpClient(session)) {
                 return fn.apply(sftp);
             }
         });
     }
 
-    private <T> T withSession(String host, int port, SftpCredentials creds, SessionFn<T> fn) throws Exception {
+    private <T> T withSession(String host, int port, SftpCredentials creds,
+                              List<String> trustedHostKeys, SessionFn<T> fn) throws Exception {
         // MINA's security-provider registrars are suppressed once in this class's
         // static initializer (registrars=none; JDK default providers only).
         // Build the client with an explicit FilePasswordProvider so MINA's
@@ -129,7 +147,7 @@ public class SftpConnectorClient {
         SshClient client = ClientBuilder.builder()
                 .filePasswordProvider(ignorePasswordProvider())
                 .build();
-        client.setServerKeyVerifier(AcceptAllServerKeyVerifier.INSTANCE);
+        client.setServerKeyVerifier(buildVerifier(trustedHostKeys));
         client.start();
         try {
             String user = creds != null && creds.username() != null ? creds.username() : "anonymous";
@@ -152,6 +170,28 @@ public class SftpConnectorClient {
         } finally {
             client.stop();
         }
+    }
+
+    private static ServerKeyVerifier buildVerifier(List<String> trustedHostKeys) {
+        if (trustedHostKeys == null || trustedHostKeys.isEmpty()) {
+            // No pinning configured: permissive (the local bundled SFTP container has an
+            // ephemeral host key). See class javadoc.
+            return AcceptAllServerKeyVerifier.INSTANCE;
+        }
+        // Pinning configured: accept only if the presented key matches a trusted entry,
+        // comparing key-type + base64 blob and ignoring any trailing comment.
+        return (session, remoteAddress, serverKey) -> {
+            String[] presented = PublicKeyEntry.toString(serverKey).split("\\s+");
+            for (String trusted : trustedHostKeys) {
+                String[] t = trusted.trim().split("\\s+");
+                if (t.length >= 2 && presented.length >= 2
+                        && t[0].equals(presented[0]) && t[1].equals(presented[1])) {
+                    return true;
+                }
+            }
+            LOG.warn("Server host key not in TrustedHostKeys for " + remoteAddress);
+            return false;
+        };
     }
 
     private static FilePasswordProvider ignorePasswordProvider() {

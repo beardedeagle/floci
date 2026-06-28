@@ -126,7 +126,7 @@ class TransferDataPlaneIntegrationTest {
         listingOutputFile = resp.jsonPath().getString("OutputFileName");
 
         S3Object listing = s3.getObject(BUCKET, "connector_output/" + listingOutputFile);
-        String json = new String(listing.getData());
+        String json = new String(listing.getData(), StandardCharsets.UTF_8);
         assertTrue(json.contains("report1.csv"), "listing should reference the remote file");
     }
 
@@ -180,17 +180,13 @@ class TransferDataPlaneIntegrationTest {
 
     @Test
     @Order(8)
-    void testConnectionRejectsNonSftpUrl() {
-        // A connector URL that is not sftp://<host> must be rejected with 400, not
-        // dereferenced into a null host and a murky 500.
-        secretsManager.createSecret("local/badurl",
-                "{\"Username\":\"x\",\"Password\":\"y\"}", null, null, null, null, "us-east-1");
-        Response c = call("CreateConnector",
+    void createConnectorRejectsNonSftpUrl() {
+        // A connector URL that is not sftp://<host> must be rejected at create time
+        // (matching AWS), not deferred to a later data-plane call.
+        call("CreateConnector",
                 "{\"Url\":\"ftp://example.com\","
                         + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
-                        + "\"SftpConfig\":{\"UserSecretId\":\"local/badurl\"}}");
-        String badConnector = c.jsonPath().getString("ConnectorId");
-        call("TestConnection", "{\"ConnectorId\":\"" + badConnector + "\"}")
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/spectrum\"}}")
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
     }
@@ -213,5 +209,47 @@ class TransferDataPlaneIntegrationTest {
                         + "\"LocalDirectoryPath\":\"/" + BUCKET + "/x\"}")
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
+    }
+
+    @Test
+    @Order(10)
+    void startFileTransferNormalizesTrailingSlashInLocalPath() {
+        // A LocalDirectoryPath with a trailing slash must not produce a double-slash
+        // S3 key ("nested//report1.csv").
+        call("StartFileTransfer",
+                "{\"ConnectorId\":\"" + connectorId + "\","
+                        + "\"RetrieveFilePaths\":[\"/Core_PSU_Reports/report1.csv\"],"
+                        + "\"LocalDirectoryPath\":\"/" + BUCKET + "/nested/\"}")
+                .then().statusCode(200);
+        S3Object pulled = s3.getObject(BUCKET, "nested/report1.csv");
+        assertArrayEquals(FILE_BODY, pulled.getData());
+    }
+
+    @Test
+    @Order(11)
+    void testConnectionEnforcesTrustedHostKeys() {
+        // Discover the bundled server's real host key via the un-pinned connector.
+        String realKey = call("TestConnection", "{\"ConnectorId\":\"" + connectorId + "\"}")
+                .jsonPath().getString("SftpConnectionDetails.HostKey");
+        secretsManager.createSecret("local/pinned",
+                "{\"Username\":\"spectrum\",\"Password\":\"pass\"}", null, null, null, null, "us-east-1");
+
+        // Pinned to a non-matching key -> verification fails -> Status ERROR.
+        Response bogus = call("CreateConnector",
+                "{\"Url\":\"sftp://127.0.0.1:" + sftpPort + "\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/pinned\","
+                        + "\"TrustedHostKeys\":[\"ssh-rsa AAAAB3NzaC1notarealkey\"]}}");
+        call("TestConnection", "{\"ConnectorId\":\"" + bogus.jsonPath().getString("ConnectorId") + "\"}")
+                .then().statusCode(200).body("Status", equalTo("ERROR"));
+
+        // Pinned to the server's real key -> verification passes -> Status OK.
+        Response good = call("CreateConnector",
+                "{\"Url\":\"sftp://127.0.0.1:" + sftpPort + "\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/pinned\","
+                        + "\"TrustedHostKeys\":[\"" + realKey + "\"]}}");
+        call("TestConnection", "{\"ConnectorId\":\"" + good.jsonPath().getString("ConnectorId") + "\"}")
+                .then().statusCode(200).body("Status", equalTo("OK"));
     }
 }
