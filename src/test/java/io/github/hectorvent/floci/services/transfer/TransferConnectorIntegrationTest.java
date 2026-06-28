@@ -134,4 +134,13 @@ class TransferConnectorIntegrationTest {
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
     }
+
+    @Test
+    @Order(10)
+    void describeConnectorWithoutConnectorIdFails() {
+        // A missing required ConnectorId must be a 400, not a 404 for "Connector  ...".
+        call("DescribeConnector", "{}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
 }

@@ -252,4 +252,13 @@ class TransferDataPlaneIntegrationTest {
         call("TestConnection", "{\"ConnectorId\":\"" + good.jsonPath().getString("ConnectorId") + "\"}")
                 .then().statusCode(200).body("Status", equalTo("OK"));
     }
+
+    @Test
+    @Order(12)
+    void listFileTransferResultsRequiresConnectorAndTransferIds() {
+        // Missing required ConnectorId/TransferId must be a 400, not a 404/empty lookup.
+        call("ListFileTransferResults", "{}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
 }

@@ -228,6 +228,15 @@ public class TransferHandler {
 
     // ── Connector handlers ────────────────────────────────────────────────────
 
+    /** Reads a required string field, returning 400 InvalidRequestException when absent/blank. */
+    private static String required(JsonNode req, String field) {
+        String v = req.path(field).asText();
+        if (v == null || v.isEmpty()) {
+            throw new AwsException("InvalidRequestException", field + " is required.", 400);
+        }
+        return v;
+    }
+
     private Response createConnector(JsonNode req, String region) {
         String url = textOrNull(req, "Url");
         String accessRole = textOrNull(req, "AccessRole");
@@ -252,7 +261,7 @@ public class TransferHandler {
     }
 
     private Response describeConnector(JsonNode req) {
-        String connectorId = req.path("ConnectorId").asText();
+        String connectorId = required(req, "ConnectorId");
         Connector connector = service.getConnector(connectorId);
         ObjectNode resp = objectMapper.createObjectNode();
         resp.set("Connector", buildConnectorNode(connector));
@@ -286,12 +295,12 @@ public class TransferHandler {
     }
 
     private Response deleteConnector(JsonNode req) {
-        service.deleteConnector(req.path("ConnectorId").asText());
+        service.deleteConnector(required(req, "ConnectorId"));
         return Response.ok(objectMapper.createObjectNode()).build();
     }
 
     private Response testConnection(JsonNode req, String region) {
-        String connectorId = req.path("ConnectorId").asText();
+        String connectorId = required(req, "ConnectorId");
         TransferService.ConnectionTest result = service.testConnection(connectorId, region);
         ObjectNode resp = objectMapper.createObjectNode();
         resp.put("ConnectorId", connectorId);
@@ -305,7 +314,7 @@ public class TransferHandler {
     }
 
     private Response startDirectoryListing(JsonNode req, String region) {
-        String connectorId = req.path("ConnectorId").asText();
+        String connectorId = required(req, "ConnectorId");
         String remoteDirectoryPath = textOrNull(req, "RemoteDirectoryPath");
         String outputDirectoryPath = textOrNull(req, "OutputDirectoryPath");
         int maxItems = req.path("MaxItems").asInt(0);
@@ -324,7 +333,7 @@ public class TransferHandler {
     }
 
     private Response startFileTransfer(JsonNode req, String region) {
-        String connectorId = req.path("ConnectorId").asText();
+        String connectorId = required(req, "ConnectorId");
         List<String> retrieveFilePaths = jsonStringList(req.path("RetrieveFilePaths"));
         String localDirectoryPath = textOrNull(req, "LocalDirectoryPath");
         if (retrieveFilePaths.isEmpty()) {
@@ -340,8 +349,8 @@ public class TransferHandler {
     }
 
     private Response listFileTransferResults(JsonNode req) {
-        String connectorId = req.path("ConnectorId").asText();
-        String transferId = req.path("TransferId").asText();
+        String connectorId = required(req, "ConnectorId");
+        String transferId = required(req, "TransferId");
         TransferRecord record = service.listFileTransferResults(connectorId, transferId);
         ObjectNode resp = objectMapper.createObjectNode();
         ArrayNode arr = resp.putArray("FileTransferResults");
