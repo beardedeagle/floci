@@ -56,6 +56,15 @@ quarkus:
       - --initialize-at-run-time=io.github.hectorvent.floci.services.cloudfront.CloudFrontService
       - --initialize-at-run-time=io.github.hectorvent.floci.services.emr.EmrService
       - --initialize-at-run-time=io.github.hectorvent.floci.services.elasticbeanstalk.ElasticBeanstalkService
+      # Apache MINA sshd (AWS Transfer connector SFTP client) caches a SecureRandom
+      # in static state; initialize the whole package at run time to keep it out of
+      # the image heap.
+      - --initialize-at-run-time=org.apache.sshd
+      # ...except its NIO FileSystemProvider SPI impls, which the JDK instantiates
+      # into the installed-providers list at build time; pin those back to
+      # build-time init (more-specific rule overrides the package rule above).
+      - --initialize-at-build-time=org.apache.sshd.sftp.client.fs.SftpFileSystemProvider
+      - --initialize-at-build-time=org.apache.sshd.common.file.root.RootedFileSystemProvider
 
 
 floci:

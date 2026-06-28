@@ -1,0 +1,19 @@
+{
+  "comment": "Native-image metadata for Apache MINA sshd (AWS Transfer connector SFTP client, SftpConnectorClient). MINA: (a) builds JDK dynamic proxies for its event-listener interfaces; (b) loads its security-provider registrar + NIO IO factory reflectively by name; (c) builds JCA SecurityEntityFactory wrappers by reflectively locating getInstance(...) on the JCA entity classes. The runtime registrar list is pinned to BouncyCastle (see SftpConnectorClient) to avoid SunJCE / net.i2p-EdDSA probing.",
+  "reflection": [
+    { "type": { "proxy": ["org.apache.sshd.common.forward.PortForwardingEventListener"] } },
+    { "type": { "proxy": ["org.apache.sshd.common.session.SessionListener"] } },
+    { "type": { "proxy": ["org.apache.sshd.common.channel.ChannelListener"] } },
+    { "type": "org.apache.sshd.common.util.security.bouncycastle.BouncyCastleSecurityProviderRegistrar", "allDeclaredConstructors": true },
+    { "type": "org.apache.sshd.common.io.nio2.Nio2ServiceFactoryFactory", "allDeclaredConstructors": true },
+    { "type": "java.security.AlgorithmParameters", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "java.security.KeyFactory", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "java.security.KeyPairGenerator", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "java.security.Signature", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "java.security.MessageDigest", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "java.security.cert.CertificateFactory", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "javax.crypto.Cipher", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "javax.crypto.Mac", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] },
+    { "type": "javax.crypto.KeyAgreement", "methods": [ {"name":"getInstance","parameterTypes":["java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.lang.String"]}, {"name":"getInstance","parameterTypes":["java.lang.String","java.security.Provider"]} ] }
+  ]
+}

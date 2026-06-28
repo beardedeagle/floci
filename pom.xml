@@ -164,6 +164,19 @@
             <version>1.84</version>
         </dependency>
 
+        <!-- Apache MINA sshd: SFTP client for the AWS Transfer connector data plane,
+             and the embedded SFTP server used by the connector integration test. -->
+        <dependency>
+            <groupId>org.apache.sshd</groupId>
+            <artifactId>sshd-core</artifactId>
+            <version>2.15.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.sshd</groupId>
+            <artifactId>sshd-sftp</artifactId>
+            <version>2.15.0</version>
+        </dependency>
+
         <!-- JSONata expression engine (Step Functions) -->
         <dependency>
             <groupId>com.dashjoin</groupId>

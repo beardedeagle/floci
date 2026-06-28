@@ -1,18 +1,30 @@
 package io.github.hectorvent.floci.services.transfer;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.core.storage.StorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
+import io.github.hectorvent.floci.services.s3.S3Service;
+import io.github.hectorvent.floci.services.secretsmanager.SecretsManagerService;
+import io.github.hectorvent.floci.services.secretsmanager.model.SecretVersion;
+import io.github.hectorvent.floci.services.transfer.model.Connector;
+import io.github.hectorvent.floci.services.transfer.model.FileTransferResult;
 import io.github.hectorvent.floci.services.transfer.model.HomeDirectoryMapping;
 import io.github.hectorvent.floci.services.transfer.model.Server;
+import io.github.hectorvent.floci.services.transfer.model.SftpConnectorConfig;
 import io.github.hectorvent.floci.services.transfer.model.SshPublicKey;
+import io.github.hectorvent.floci.services.transfer.model.TransferRecord;
 import io.github.hectorvent.floci.services.transfer.model.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -27,18 +39,34 @@ public class TransferService {
 
     private final StorageBackend<String, Server> serverStore;
     private final StorageBackend<String, User> userStore;
+    private final StorageBackend<String, Connector> connectorStore;
+    private final StorageBackend<String, TransferRecord> transferResultStore;
     private final StorageBackend<String, Map<String, String>> tagStore;
     private final RegionResolver regionResolver;
+    private final S3Service s3Service;
+    private final SecretsManagerService secretsManagerService;
+    private final SftpConnectorClient sftpClient;
+    private final ObjectMapper objectMapper;
 
     @Inject
-    public TransferService(StorageFactory factory, EmulatorConfig config, RegionResolver regionResolver) {
+    public TransferService(StorageFactory factory, EmulatorConfig config, RegionResolver regionResolver,
+                           S3Service s3Service, SecretsManagerService secretsManagerService,
+                           SftpConnectorClient sftpClient, ObjectMapper objectMapper) {
         this.serverStore = factory.create("transfer", "transfer-servers.json",
                 new TypeReference<Map<String, Server>>() {});
         this.userStore = factory.create("transfer", "transfer-users.json",
                 new TypeReference<Map<String, User>>() {});
+        this.connectorStore = factory.create("transfer", "transfer-connectors.json",
+                new TypeReference<Map<String, Connector>>() {});
+        this.transferResultStore = factory.create("transfer", "transfer-file-transfer-results.json",
+                new TypeReference<Map<String, TransferRecord>>() {});
         this.tagStore = factory.create("transfer", "transfer-tags.json",
                 new TypeReference<Map<String, Map<String, String>>>() {});
         this.regionResolver = regionResolver;
+        this.s3Service = s3Service;
+        this.secretsManagerService = secretsManagerService;
+        this.sftpClient = sftpClient;
+        this.objectMapper = objectMapper;
     }
 
     // ── Servers ───────────────────────────────────────────────────────────────
@@ -246,6 +274,231 @@ public class TransferService {
         return user;
     }
 
+    // ── Connectors ────────────────────────────────────────────────────────────
+
+    public Connector createConnector(String region, String url, String accessRole,
+                                     String loggingRole, SftpConnectorConfig sftpConfig,
+                                     String securityPolicyName, Map<String, String> tags) {
+        String connectorId = generateConnectorId();
+        String arn = "arn:aws:transfer:" + region + ":" + regionResolver.getAccountId() + ":connector/" + connectorId;
+
+        Connector connector = new Connector();
+        connector.setConnectorId(connectorId);
+        connector.setArn(arn);
+        connector.setUrl(url);
+        connector.setAccessRole(accessRole);
+        connector.setLoggingRole(loggingRole);
+        connector.setSftpConfig(sftpConfig);
+        connector.setSecurityPolicyName(securityPolicyName != null ? securityPolicyName : "TransferSecurityPolicy-2020-06");
+        connector.setTags(tags != null ? tags : new HashMap<>());
+        connector.setCreationTime(Instant.now());
+
+        connectorStore.put(connectorId, connector);
+
+        if (tags != null && !tags.isEmpty()) {
+            tagStore.put("connector/" + connectorId, new HashMap<>(tags));
+        }
+
+        return connector;
+    }
+
+    public Connector getConnector(String connectorId) {
+        return connectorStore.get(connectorId).orElseThrow(() ->
+                new AwsException("ResourceNotFoundException",
+                        "Connector " + connectorId + " does not exist.", 404));
+    }
+
+    public List<Connector> listConnectors(String nextToken, int maxResults) {
+        List<Connector> all = new ArrayList<>(connectorStore.scan(k -> true));
+        all.sort((a, b) -> a.getConnectorId().compareTo(b.getConnectorId()));
+        if (nextToken != null && !nextToken.isEmpty()) {
+            int idx = 0;
+            for (int i = 0; i < all.size(); i++) {
+                if (all.get(i).getConnectorId().equals(nextToken)) {
+                    idx = i + 1;
+                    break;
+                }
+            }
+            all = all.subList(idx, all.size());
+        }
+        if (maxResults > 0 && all.size() > maxResults) {
+            return all.subList(0, maxResults);
+        }
+        return all;
+    }
+
+    public void deleteConnector(String connectorId) {
+        getConnector(connectorId);
+        connectorStore.delete(connectorId);
+        tagStore.delete("connector/" + connectorId);
+    }
+
+    // ── Connector data plane (SFTP <-> S3) ────────────────────────────────────
+
+    public ConnectionTest testConnection(String connectorId, String region) {
+        Connector connector = getConnector(connectorId);
+        URI uri = parseUrl(connector.getUrl());
+        try {
+            SftpConnectorClient.SftpCredentials creds = resolveCredentials(connector, region);
+            String hostKey = sftpClient.fetchHostKey(uri.getHost(), port(uri), creds);
+            return new ConnectionTest("OK", "Connection succeeded", hostKey);
+        } catch (Exception e) {
+            return new ConnectionTest("ERROR", e.getMessage(), null);
+        }
+    }
+
+    public DirectoryListing startDirectoryListing(String connectorId, String region,
+                                                  String remoteDirectoryPath, String outputDirectoryPath,
+                                                  int maxItems) {
+        Connector connector = getConnector(connectorId);
+        SftpConnectorClient.SftpCredentials creds = resolveCredentials(connector, region);
+        URI uri = parseUrl(connector.getUrl());
+
+        List<SftpConnectorClient.RemoteEntry> entries;
+        try {
+            entries = sftpClient.listDirectory(uri.getHost(), port(uri), creds, remoteDirectoryPath);
+        } catch (Exception e) {
+            throw new AwsException("InternalServiceError",
+                    "Directory listing failed: " + e.getMessage(), 500);
+        }
+
+        ObjectNode root = objectMapper.createObjectNode();
+        ArrayNode files = root.putArray("files");
+        ArrayNode paths = root.putArray("paths");
+        boolean truncated = false;
+        int count = 0;
+        for (SftpConnectorClient.RemoteEntry e : entries) {
+            if (maxItems > 0 && count >= maxItems) {
+                truncated = true;
+                break;
+            }
+            if (e.directory()) {
+                paths.add(joinPath(remoteDirectoryPath, e.name()));
+            } else {
+                ObjectNode f = files.addObject();
+                f.put("filePath", joinPath(remoteDirectoryPath, e.name()));
+                f.put("modifiedTimestamp", Instant.ofEpochMilli(e.modifiedEpochMillis()).toString());
+                f.put("size", e.size());
+            }
+            count++;
+        }
+        root.put("truncated", truncated);
+
+        String listingId = UUID.randomUUID().toString();
+        String outputFileName = connectorId + "-" + listingId + ".json";
+        String[] bk = parseS3Path(outputDirectoryPath);
+        String key = bk[1].isEmpty() ? outputFileName : bk[1] + "/" + outputFileName;
+        byte[] body;
+        try {
+            body = objectMapper.writeValueAsBytes(root);
+        } catch (Exception e) {
+            throw new AwsException("InternalServiceError",
+                    "Failed to serialize listing: " + e.getMessage(), 500);
+        }
+        s3Service.createBucket(bk[0], region);
+        s3Service.putObject(bk[0], key, body, "application/json", new HashMap<>());
+        return new DirectoryListing(listingId, outputFileName);
+    }
+
+    public String startFileTransfer(String connectorId, String region,
+                                    List<String> retrieveFilePaths, String localDirectoryPath) {
+        Connector connector = getConnector(connectorId);
+        SftpConnectorClient.SftpCredentials creds = resolveCredentials(connector, region);
+        URI uri = parseUrl(connector.getUrl());
+        String[] bk = parseS3Path(localDirectoryPath);
+        s3Service.createBucket(bk[0], region);
+
+        List<FileTransferResult> results = new ArrayList<>();
+        for (String remotePath : retrieveFilePaths) {
+            FileTransferResult result = new FileTransferResult();
+            result.setFilePath(remotePath);
+            try {
+                byte[] data = sftpClient.retrieveFile(uri.getHost(), port(uri), creds, remotePath);
+                String key = (bk[1].isEmpty() ? "" : bk[1] + "/") + basename(remotePath);
+                s3Service.putObject(bk[0], key, data, "application/octet-stream", new HashMap<>());
+                result.setStatusCode("COMPLETED");
+            } catch (Exception e) {
+                result.setStatusCode("FAILED");
+                result.setFailureCode("RETRIEVE_FAILED");
+                result.setFailureMessage(e.getMessage());
+            }
+            results.add(result);
+        }
+
+        String transferId = UUID.randomUUID().toString();
+        TransferRecord record = new TransferRecord();
+        record.setTransferId(transferId);
+        record.setConnectorId(connectorId);
+        record.setResults(results);
+        transferResultStore.put(transferId, record);
+        return transferId;
+    }
+
+    public TransferRecord listFileTransferResults(String connectorId, String transferId) {
+        return transferResultStore.get(transferId).orElseThrow(() ->
+                new AwsException("ResourceNotFoundException",
+                        "Transfer " + transferId + " does not exist.", 404));
+    }
+
+    private SftpConnectorClient.SftpCredentials resolveCredentials(Connector connector, String region) {
+        SftpConnectorConfig cfg = connector.getSftpConfig();
+        if (cfg == null || cfg.getUserSecretId() == null || cfg.getUserSecretId().isEmpty()) {
+            throw new AwsException("InvalidRequestException",
+                    "Connector " + connector.getConnectorId() + " has no SftpConfig.UserSecretId.", 400);
+        }
+        SecretVersion version = secretsManagerService.getSecretValue(cfg.getUserSecretId(), null, null, region);
+        try {
+            JsonNode node = objectMapper.readTree(version.getSecretString());
+            return new SftpConnectorClient.SftpCredentials(
+                    node.path("Username").asText(null),
+                    node.path("Password").asText(null),
+                    node.path("PrivateKey").asText(null));
+        } catch (Exception e) {
+            throw new AwsException("InvalidRequestException",
+                    "Connector secret is not valid JSON: " + e.getMessage(), 400);
+        }
+    }
+
+    private URI parseUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            throw new AwsException("InvalidRequestException", "Connector URL is missing.", 400);
+        }
+        try {
+            return URI.create(url);
+        } catch (Exception e) {
+            throw new AwsException("InvalidRequestException", "Invalid connector URL: " + url, 400);
+        }
+    }
+
+    private int port(URI uri) {
+        return uri.getPort() > 0 ? uri.getPort() : 22;
+    }
+
+    private String[] parseS3Path(String path) {
+        String p = path.startsWith("/") ? path.substring(1) : path;
+        int slash = p.indexOf('/');
+        if (slash < 0) {
+            return new String[]{p, ""};
+        }
+        return new String[]{p.substring(0, slash), p.substring(slash + 1)};
+    }
+
+    private String basename(String path) {
+        int idx = path.lastIndexOf('/');
+        return idx >= 0 ? path.substring(idx + 1) : path;
+    }
+
+    private String joinPath(String dir, String name) {
+        if (dir == null || dir.isEmpty()) {
+            return name;
+        }
+        return dir.endsWith("/") ? dir + name : dir + "/" + name;
+    }
+
+    public record ConnectionTest(String status, String statusMessage, String hostKey) {}
+
+    public record DirectoryListing(String listingId, String outputFileName) {}
+
     // ── SSH Keys ──────────────────────────────────────────────────────────────
 
     public SshPublicKey importSshPublicKey(String serverId, String userName, String sshPublicKeyBody) {
@@ -305,6 +558,13 @@ public class TransferService {
         return sb.toString();
     }
 
+    private String generateConnectorId() {
+        StringBuilder sb = new StringBuilder("c-");
+        String uuid = UUID.randomUUID().toString().replace("-", "");
+        sb.append(uuid, 0, 17);
+        return sb.toString();
+    }
+
     private String arnToTagKey(String arn) {
         // arn:aws:transfer:region:account:server/s-xxx  → server/s-xxx
         // arn:aws:transfer:region:account:user/s-xxx/alice → user/s-xxx/alice
@@ -325,6 +585,12 @@ public class TransferService {
             userStore.get(userKey).ifPresent(u -> {
                 u.setTags(tags);
                 userStore.put(userKey, u);
+            });
+        } else if (key.startsWith("connector/")) {
+            String connectorId = key.substring("connector/".length());
+            connectorStore.get(connectorId).ifPresent(c -> {
+                c.setTags(tags);
+                connectorStore.put(connectorId, c);
             });
         }
     }

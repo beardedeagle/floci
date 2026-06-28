@@ -69,7 +69,7 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
 
     @Override
     public void filter(ContainerRequestContext ctx) {
-        if (!config.services().iam().enforcementEnabled()) {
+        if (!enforcementEnabled()) {
             return;
         }
 
@@ -107,6 +107,20 @@ public class IamEnforcementFilter implements ContainerRequestFilter {
             LOG.infov("IAM enforcement DENY: akid={0} action={1} resource={2}", akid, action, resource);
             ctx.abortWith(accessDeniedResponse(action, credentialScope, ctx.getMediaType()));
         }
+    }
+
+    /**
+     * Enforcement is on when either the {@code floci.services.iam.enforcement-enabled}
+     * config flag is true, or the {@code FLOCI_ENFORCE_IAM} env var is set to
+     * {@code 1}/{@code true} — a convenience alias for switching on local deny-path
+     * testing without the longer {@code FLOCI_SERVICES_IAM_ENFORCEMENT_ENABLED}.
+     */
+    private boolean enforcementEnabled() {
+        if (config.services().iam().enforcementEnabled()) {
+            return true;
+        }
+        String env = System.getenv("FLOCI_ENFORCE_IAM");
+        return "1".equals(env) || "true".equalsIgnoreCase(env);
     }
 
     private String extractCredentialScope(String auth) {
