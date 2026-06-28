@@ -435,9 +435,16 @@ public class TransferService {
     }
 
     public TransferRecord listFileTransferResults(String connectorId, String transferId) {
-        return transferResultStore.get(transferId).orElseThrow(() ->
+        TransferRecord record = transferResultStore.get(transferId).orElseThrow(() ->
                 new AwsException("ResourceNotFoundException",
                         "Transfer " + transferId + " does not exist.", 404));
+        // Scope the lookup to the supplied connector: a transfer created under a
+        // different connector must not be retrievable here (per-connector isolation).
+        if (!record.getConnectorId().equals(connectorId)) {
+            throw new AwsException("ResourceNotFoundException",
+                    "Transfer " + transferId + " does not exist for connector " + connectorId + ".", 404);
+        }
+        return record;
     }
 
     private SftpConnectorClient.SftpCredentials resolveCredentials(Connector connector, String region) {
@@ -475,12 +482,17 @@ public class TransferService {
     }
 
     private String[] parseS3Path(String path) {
+        if (path == null || path.isBlank()) {
+            throw new AwsException("InvalidRequestException", "S3 directory path is required.", 400);
+        }
         String p = path.startsWith("/") ? path.substring(1) : path;
         int slash = p.indexOf('/');
-        if (slash < 0) {
-            return new String[]{p, ""};
+        String bucket = slash < 0 ? p : p.substring(0, slash);
+        if (bucket.isEmpty()) {
+            throw new AwsException("InvalidRequestException",
+                    "S3 directory path must include a bucket: " + path, 400);
         }
-        return new String[]{p.substring(0, slash), p.substring(slash + 1)};
+        return new String[]{bucket, slash < 0 ? "" : p.substring(slash + 1)};
     }
 
     private String basename(String path) {

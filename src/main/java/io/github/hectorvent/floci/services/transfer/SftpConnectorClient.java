@@ -16,6 +16,7 @@ import org.apache.sshd.sftp.client.SftpClientFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -27,8 +28,12 @@ import java.util.List;
  * the server host key, list a remote directory, and retrieve files. Pairs with the
  * connector ops in {@link TransferHandler} / {@link TransferService}.
  *
- * <p>Host-key verification is intentionally permissive (AcceptAll): this is a local
- * emulator data-plane surface, not a security boundary — see docs/CONTRACT.md.
+ * <p>Host-key verification is intentionally permissive (AcceptAll), and a connector's
+ * {@code SftpConfig.TrustedHostKeys} is accepted for API-shape fidelity but deliberately
+ * NOT enforced: this is a local emulator data-plane surface that pulls from the bundled
+ * SFTP container (ephemeral host keys), not a security boundary — see docs/CONTRACT.md.
+ * If this client is ever pointed at a real external partner endpoint, host-key pinning
+ * (and honoring TrustedHostKeys) must be revisited.
  */
 @ApplicationScoped
 public class SftpConnectorClient {
@@ -159,7 +164,7 @@ public class SftpConnectorClient {
     }
 
     private Iterable<KeyPair> loadKeyPairs(String pem) throws Exception {
-        try (InputStream in = new ByteArrayInputStream(pem.getBytes())) {
+        try (InputStream in = new ByteArrayInputStream(pem.getBytes(StandardCharsets.UTF_8))) {
             Iterable<KeyPair> pairs = SecurityUtils.loadKeyPairIdentities(
                     null, NamedResource.ofName("connector-key"), in, null);
             return pairs != null ? pairs : List.of();

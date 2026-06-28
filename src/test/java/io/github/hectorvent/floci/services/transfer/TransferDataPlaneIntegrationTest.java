@@ -152,4 +152,28 @@ class TransferDataPlaneIntegrationTest {
                 .body("FileTransferResults[0].FilePath", equalTo("/Core_PSU_Reports/report1.csv"))
                 .body("FileTransferResults[0].StatusCode", equalTo("COMPLETED"));
     }
+
+    @Test
+    @Order(6)
+    void listFileTransferResultsRejectsWrongConnector() {
+        // The transfer was created under `connectorId`; querying it under a different
+        // connector must 404 rather than leak results across connectors.
+        call("ListFileTransferResults",
+                "{\"ConnectorId\":\"c-00000000000000000\",\"TransferId\":\"" + transferId + "\"}")
+                .then().statusCode(404)
+                .body("__type", equalTo("ResourceNotFoundException"));
+    }
+
+    @Test
+    @Order(7)
+    void startFileTransferRejectsBucketlessLocalPath() {
+        // A LocalDirectoryPath with no bucket segment ("/") must be rejected, not
+        // silently routed into an empty-named bucket.
+        call("StartFileTransfer",
+                "{\"ConnectorId\":\"" + connectorId + "\","
+                        + "\"RetrieveFilePaths\":[\"/Core_PSU_Reports/report1.csv\"],"
+                        + "\"LocalDirectoryPath\":\"/\"}")
+                .then().statusCode(400)
+                .body("__type", equalTo("InvalidRequestException"));
+    }
 }
