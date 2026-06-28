@@ -262,15 +262,22 @@ public class TransferHandler {
     private Response listConnectors(JsonNode req) {
         String nextToken = textOrNull(req, "NextToken");
         int maxResults = req.path("MaxResults").asInt(100);
-        List<Connector> connectors = service.listConnectors(nextToken, maxResults);
+        // Over-fetch by one so we can tell whether more results exist beyond this
+        // page: NextToken must only be returned when there genuinely is a next page,
+        // otherwise clients paginate into an empty response.
+        List<Connector> page = service.listConnectors(nextToken, maxResults + 1);
+        boolean hasMore = page.size() > maxResults;
+        if (hasMore) {
+            page = page.subList(0, maxResults);
+        }
 
         ObjectNode resp = objectMapper.createObjectNode();
         ArrayNode arr = resp.putArray("Connectors");
-        for (Connector c : connectors) {
+        for (Connector c : page) {
             arr.add(buildConnectorListEntry(c));
         }
-        if (connectors.size() == maxResults) {
-            resp.put("NextToken", connectors.get(connectors.size() - 1).getConnectorId());
+        if (hasMore) {
+            resp.put("NextToken", page.get(page.size() - 1).getConnectorId());
         }
         return Response.ok(resp).build();
     }

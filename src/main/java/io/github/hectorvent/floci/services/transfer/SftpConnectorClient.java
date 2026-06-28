@@ -43,6 +43,27 @@ public class SftpConnectorClient {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration AUTH_TIMEOUT = Duration.ofSeconds(15);
 
+    static {
+        // Suppress ALL of MINA's security-provider registrars so every algorithm
+        // resolves through the JDK's default providers via plain getInstance(algo):
+        // X25519/X448 key agreement -> SunEC, rsa host keys -> SunRsaSign, ciphers/
+        // MACs -> SunJCE. None of these is a third-party provider, so there is no JCE
+        // jar-signature check -- that check is what breaks BouncyCastle-by-name in a
+        // native image ("JCE cannot authenticate the provider BC"), and whether a
+        // build-time-verified BC instance survives into the image is distribution-
+        // dependent (it failed on Oracle GraalVM, worked on CE). The JDK providers
+        // ship in every OpenJDK-derived JDK (CE, Mandrel, Temurin), so this path is
+        // distribution-agnostic -- important because CI builds the native image with
+        // Mandrel. "none" also stops MINA from reflectively loading its default
+        // registrar classes (e.g. SunJCESecurityProviderRegistrar), which the native
+        // image does not include -> avoids a ClassNotFoundException at first use.
+        // floci's own BouncyCastle usage (KMS/ACM) is unaffected: this is MINA-only.
+        // ed25519 host keys would need BC or net.i2p (not shipped); the server's rsa
+        // host key is negotiated instead. Set once at class load -- before any MINA
+        // class is touched, since all MINA use flows through this class.
+        System.setProperty("org.apache.sshd.security.registrars", "none");
+    }
+
     public record SftpCredentials(String username, String password, String privateKey) {}
 
     public record RemoteEntry(String name, long size, long modifiedEpochMillis, boolean directory) {}
@@ -97,23 +118,8 @@ public class SftpConnectorClient {
     }
 
     private <T> T withSession(String host, int port, SftpCredentials creds, SessionFn<T> fn) throws Exception {
-        // Suppress ALL of MINA's security-provider registrars so every algorithm
-        // resolves through the JDK's default providers via plain getInstance(algo):
-        // X25519/X448 key agreement -> SunEC, rsa host keys -> SunRsaSign, ciphers/
-        // MACs -> SunJCE. None of these is a third-party provider, so there is no JCE
-        // jar-signature check -- that check is what breaks BouncyCastle-by-name in a
-        // native image ("JCE cannot authenticate the provider BC"), and whether a
-        // build-time-verified BC instance survives into the image is distribution-
-        // dependent (it failed on Oracle GraalVM, worked on CE). The JDK providers
-        // ship in every OpenJDK-derived JDK (CE, Mandrel, Temurin), so this path is
-        // distribution-agnostic -- important because CI builds the native image with
-        // Mandrel. "none" also stops MINA from reflectively loading its default
-        // registrar classes (e.g. SunJCESecurityProviderRegistrar), which the native
-        // image does not include -> avoids a ClassNotFoundException at first use.
-        // floci's own BouncyCastle usage (KMS/ACM) is unaffected: this is MINA-only.
-        // ed25519 host keys would need BC or net.i2p (not shipped); the server's rsa
-        // host key is negotiated instead. Must be set before the first SshClient touch.
-        System.setProperty("org.apache.sshd.security.registrars", "none");
+        // MINA's security-provider registrars are suppressed once in this class's
+        // static initializer (registrars=none; JDK default providers only).
         // Build the client with an explicit FilePasswordProvider so MINA's
         // ClientBuilder default (DEFAULT_FILE_PASSWORD_PROVIDER = FilePasswordProvider.EMPTY)
         // is never read: that static is null under GraalVM native (class-init

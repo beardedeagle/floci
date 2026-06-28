@@ -23,6 +23,7 @@ import io.github.hectorvent.floci.services.transfer.model.TransferRecord;
 import io.github.hectorvent.floci.services.transfer.model.User;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import java.net.URI;
 import java.time.Instant;
@@ -34,6 +35,8 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class TransferService {
+
+    private static final Logger LOG = Logger.getLogger(TransferService.class);
 
     private static final String CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -343,7 +346,8 @@ public class TransferService {
             String hostKey = sftpClient.fetchHostKey(uri.getHost(), port(uri), creds);
             return new ConnectionTest("OK", "Connection succeeded", hostKey);
         } catch (Exception e) {
-            return new ConnectionTest("ERROR", e.getMessage(), null);
+            LOG.warn("TestConnection failed for connector " + connectorId, e);
+            return new ConnectionTest("ERROR", "Connection failed.", null);
         }
     }
 

@@ -13,6 +13,7 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.startsWith;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * AWS Transfer Family connector management-plane flow over the AWS JSON 1.1 wire
@@ -94,5 +95,24 @@ class TransferConnectorIntegrationTest {
         call("CreateConnector", "{\"AccessRole\":\"arn:aws:iam::000000000000:role/x\"}")
                 .then().statusCode(400)
                 .body("__type", equalTo("InvalidRequestException"));
+    }
+
+    @Test
+    @Order(7)
+    void listConnectorsOmitsNextTokenWhenPageExactlyExhaustsResults() {
+        // Regression: NextToken must not be emitted when the page size equals
+        // maxResults but there are no further results (else clients paginate into
+        // an empty page).
+        call("CreateConnector",
+                "{\"Url\":\"sftp://partner.example.com\","
+                        + "\"AccessRole\":\"arn:aws:iam::000000000000:role/transfer-access\","
+                        + "\"SftpConfig\":{\"UserSecretId\":\"local/spectrum\"}}")
+                .then().statusCode(200);
+        int total = call("ListConnectors", "{\"MaxResults\":1000}")
+                .jsonPath().getList("Connectors").size();
+        Response r = call("ListConnectors", "{\"MaxResults\":" + total + "}");
+        r.then().statusCode(200);
+        assertNull(r.jsonPath().get("NextToken"),
+                "no NextToken when the page exactly exhausts results");
     }
 }
