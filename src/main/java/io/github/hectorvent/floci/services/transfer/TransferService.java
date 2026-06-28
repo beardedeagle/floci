@@ -426,18 +426,21 @@ public class TransferService {
                 FileTransferResult result = new FileTransferResult();
                 result.setFilePath(f.remotePath());
                 if (f.errorMessage() != null) {
+                    LOG.warn("File retrieve failed for connector " + connectorId + " path "
+                            + f.remotePath() + ": " + f.errorMessage());
                     result.setStatusCode("FAILED");
                     result.setFailureCode("RETRIEVE_FAILED");
-                    result.setFailureMessage(f.errorMessage());
+                    result.setFailureMessage("Failed to retrieve the file from the SFTP server.");
                 } else {
                     try {
                         String key = (bk[1].isEmpty() ? "" : bk[1] + "/") + basename(f.remotePath());
                         s3Service.putObject(bk[0], key, f.data(), "application/octet-stream", new HashMap<>());
                         result.setStatusCode("COMPLETED");
                     } catch (Exception e) {
+                        LOG.warn("S3 write failed for connector " + connectorId + " path " + f.remotePath(), e);
                         result.setStatusCode("FAILED");
                         result.setFailureCode("WRITE_FAILED");
-                        result.setFailureMessage(e.getMessage());
+                        result.setFailureMessage("Failed to write the file to the local S3 destination.");
                     }
                 }
                 results.add(result);
@@ -450,7 +453,7 @@ public class TransferService {
                 result.setFilePath(remotePath);
                 result.setStatusCode("FAILED");
                 result.setFailureCode("CONNECTION_FAILED");
-                result.setFailureMessage(e.getMessage());
+                result.setFailureMessage("Failed to connect to the SFTP server.");
                 results.add(result);
             }
         }
